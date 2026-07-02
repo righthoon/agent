@@ -18,6 +18,7 @@ chatbot_core.py — 화면과 분리된 복약안전 챗봇 '부품'
 ================================================================
 """
 
+import os
 import re
 import json
 import base64
@@ -34,8 +35,20 @@ load_dotenv()                                  # .env 에서 API 키 로드
 CSV = "한국의약품안전관리원_병용금기약물_20240625.csv"
 MODEL = "claude-sonnet-5"
 
-_PARTNERS, _NAME_OF = load_contraindications(CSV)      # 병용금기 판정용 데이터
-_PRODUCT_TO_CODE = load_product_index(CSV)             # 제품명 -> 성분코드
+def _load_data():
+    """배포용: 작은 dur_data.json 이 있으면 그걸 쓰고, 없으면 원본 CSV를 읽는다."""
+    if os.path.exists("dur_data.json"):
+        with open("dur_data.json", encoding="utf-8") as f:
+            d = json.load(f)
+        partners = {code: set((p, r) for p, r in pairs)
+                    for code, pairs in d["partners"].items()}
+        return partners, d["name_of"], d["product_to_code"]
+    # 로컬 개발용 폴백 (원본 CSV)
+    partners, name_of = load_contraindications(CSV)
+    return partners, name_of, load_product_index(CSV)
+
+
+_PARTNERS, _NAME_OF, _PRODUCT_TO_CODE = _load_data()   # 병용금기 데이터(JSON 우선)
 _client = Anthropic()                                  # 키는 위 load_dotenv 로 자동 인증
 
 # ── 약-음식 상호작용 표 (근거 분명한 대표 사례만) ─────────────
