@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>약손 AI 모델 설계서 · 복약안전 에이전트</title>
+<style>
+  :root{
+    --ink:#16202b; --muted:#5a6b7a; --line:#e3e9ef; --card:#fff;
+    --claude:#c56a2b; --clova:#03c75a; --db:#3178c6; --core:#0b7a63; --result:#7a2b8a;
+    --chip:#eef4f9; --bg:#f4f7fa; --shadow:0 1px 3px rgba(20,40,60,.08),0 10px 26px rgba(20,40,60,.06);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"Pretendard","Malgun Gothic","맑은 고딕",system-ui,sans-serif;
+    color:var(--ink);background:var(--bg);line-height:1.65}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 20px}
+  header.hero{background:linear-gradient(135deg,#0d2a44,#0b5b70);color:#eaf4f2;padding:48px 0 40px}
+  .kicker{display:inline-block;font-size:12px;font-weight:700;letter-spacing:2px;color:#8fd3c4;margin-bottom:10px}
+  header.hero h1{margin:0 0 8px;font-size:29px;letter-spacing:-.5px}
+  header.hero p{margin:6px 0 0;color:#c6ddd9;font-size:14.5px;max-width:800px}
+  .meta-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+  .meta-row span{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.2);padding:5px 11px;border-radius:999px;font-size:12.5px}
+
+  section{padding:32px 0}
+  h2.sec{font-size:20px;margin:0 0 4px;display:flex;align-items:center;gap:10px}
+  h2.sec .ic{width:28px;height:28px;border-radius:8px;background:var(--core);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:14px;flex:none}
+  .lead{color:var(--muted);font-size:14.5px;margin:2px 0 18px;max-width:840px}
+
+  /* 다이어그램 */
+  .diagram{background:#fff;border:1px solid var(--line);border-radius:16px;padding:22px;box-shadow:var(--shadow)}
+  .node{border-radius:12px;padding:12px 14px;font-size:13.5px;text-align:center;border:2px solid var(--line);background:#fbfdff}
+  .node .t{font-weight:700;font-size:14px} .node .s{font-size:11.5px;color:var(--muted);margin-top:3px}
+  .n-claude{border-color:var(--claude)} .n-claude .t{color:var(--claude)}
+  .n-clova{border-color:var(--clova)} .n-clova .t{color:#059a48}
+  .n-db{border-color:var(--db)} .n-db .t{color:var(--db)}
+  .n-core{border-color:var(--core);background:#eefaf6} .n-core .t{color:var(--core)}
+  .n-result{border-color:var(--result);background:#faf1fc} .n-result .t{color:var(--result)}
+  .drow{display:grid;grid-template-columns:200px 40px 200px 40px 1fr;align-items:center;gap:10px;margin:10px 0}
+  .arrow{text-align:center;color:#6a8398;font-size:22px;font-weight:700}
+  .stack{display:flex;flex-direction:column;gap:10px}
+  @media(max-width:800px){.drow{grid-template-columns:1fr;} .arrow{transform:rotate(90deg)}}
+
+  table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden;box-shadow:var(--shadow);font-size:13.3px}
+  th,td{padding:11px 13px;border-bottom:1px solid var(--line);vertical-align:top;text-align:left}
+  th{background:#0d2a44;color:#eaf4f2;font-weight:600;font-size:12.5px}
+  td.mono{font-family:"Consolas","D2Coding",monospace;font-size:12.5px}
+  .tag{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:6px}
+  .done{background:#e5f6ee;color:#0b7a4f} .todo{background:#fdeede;color:#b5531f} .ext{background:#e9f0fb;color:#3178c6}
+
+  .box{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px 18px;box-shadow:var(--shadow)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:760px){.grid2{grid-template-columns:1fr}}
+  .box h3{margin:0 0 8px;font-size:15px} .box h4{margin:0 0 6px;font-size:12.5px;color:var(--core);text-transform:uppercase;letter-spacing:.3px}
+  .box ul{margin:0;padding-left:18px;font-size:13.7px} .box li{margin:4px 0}
+
+  .code{background:#0e1f2b;color:#d7ecf2;border-radius:10px;padding:14px 16px;font-size:12.6px;font-family:"Consolas","D2Coding",monospace;overflow-x:auto;line-height:1.7}
+  .code .k{color:#7fe0cf} .code .c{color:#7c93a3} .code .y{color:#ffd58a}
+
+  .callout{background:#fff;border:1px solid var(--line);border-left:5px solid var(--core);border-radius:10px;padding:14px 16px;font-size:14px;box-shadow:var(--shadow)}
+  .callout.warn{border-left-color:var(--claude)} .callout b{color:var(--core)} .callout.warn b{color:var(--claude)}
+  footer{padding:26px 0 48px;color:var(--muted);font-size:12.5px;text-align:center}
+  @media print{body{background:#fff}.diagram,.box,table,.callout{box-shadow:none}header.hero{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="kicker">AI MODEL DESIGN · flow.md 기반</span>
+    <h1>약손 — 복약안전 AI 에이전트 모델 설계서</h1>
+    <p>사진·음성으로 약을 식별하고, 사용자의 이전 복용약·범용금기 목록과 대조해 <b>병용 위험</b>과 <b>주의 음식</b>을 판정하는 멀티모달 에이전트. 판정의 안전 코어는 LLM이 아니라 결정론적 규칙엔진으로 두어 신뢰성을 확보한다.</p>
+    <div class="meta-row">
+      <span>입력: 사진/텍스트 · 음성</span>
+      <span>Claude · Naver Clova Speech</span>
+      <span>Supabase(PostgreSQL)</span>
+      <span>분석 node = 결정론적 룰엔진</span>
+    </div>
+  </div>
+</header>
+
+<!-- 1. 아키텍처 -->
+<section class="wrap">
+  <h2 class="sec"><span class="ic">1</span> 전체 아키텍처 (흐름도 반영)</h2>
+  <p class="lead">flow.md의 흐름도를 그대로 구현 단위로 옮긴 구조입니다. 두 갈래 입력이 AI Agent에서 "약 식별"로 합쳐지고, Supabase의 데이터와 함께 분석 node로 모여 결과가 나옵니다.</p>
+  <div class="diagram">
+
+    <!-- 데이터 층 -->
+    <div class="drow">
+      <div class="node n-db">
+        <div class="t">① 기본정보 · 복약이력 DB</div>
+        <div class="s">Supabase(PostgreSQL) — 사용자가 이전에 복용하던 약</div>
+      </div>
+      <div class="arrow">＼</div>
+      <div class="node n-db">
+        <div class="t">② 범용금기 약물 목록</div>
+        <div class="s">Supabase — DUR 병용금기 데이터</div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="node n-core">
+        <div class="t">분석 node (안전 코어)</div>
+        <div class="s">결정론적 규칙엔진 · LLM 판정 아님</div>
+      </div>
+    </div>
+
+    <!-- 입력 → 에이전트 -->
+    <div class="drow">
+      <div class="stack">
+        <div class="node n-claude">
+          <div class="t">입력1 · 사진 / 텍스트</div>
+          <div class="s">API: Claude (비전·텍스트)</div>
+        </div>
+        <div class="node n-clova">
+          <div class="t">입력2 · 음성</div>
+          <div class="s">API: Naver Clova Speech (STT)</div>
+        </div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="node n-claude">
+        <div class="t">AI Agent</div>
+        <div class="s">Claude — 약 식별 오케스트레이션</div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="node n-claude">
+        <div class="t">어떤 약인지 · 효력</div>
+        <div class="s">성분/제품명 + 효능 요약 → 분석 node로</div>
+      </div>
+    </div>
+
+    <!-- 결과 -->
+    <div class="drow">
+      <div></div><div></div><div></div>
+      <div class="arrow">→</div>
+      <div class="node n-result">
+        <div class="t">결과</div>
+        <div class="s">① 병용 위험 판단 ② 주의 음식 (+안전문구)</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 2. 노드별 설계 -->
+<section class="wrap">
+  <h2 class="sec"><span class="ic">2</span> 노드별 모델·API 설계</h2>
+  <table>
+    <thead><tr><th>노드</th><th>역할</th><th>모델 / API</th><th>입력 → 출력</th><th>상태</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>입력1</b><br>사진/텍스트</td>
+        <td>알약·약통·처방전 이미지 또는 타이핑된 약 이름 수집</td>
+        <td class="mono">Claude 비전<br>claude-sonnet-5</td>
+        <td>이미지/텍스트 → 각인·모양·성분 후보</td>
+        <td><span class="tag done">구현됨</span></td>
+      </tr>
+      <tr>
+        <td><b>입력2</b><br>음성</td>
+        <td>"내가 먹는 약 알려줘" 등 음성 발화를 텍스트로 변환</td>
+        <td class="mono">Naver Clova Speech<br>(STT)</td>
+        <td>음성 → 텍스트</td>
+        <td><span class="tag ext">외부 연동</span></td>
+      </tr>
+      <tr>
+        <td><b>AI Agent</b></td>
+        <td>입력을 받아 "어떤 약인지 + 효력" 식별. 필요 시 도구 호출</td>
+        <td class="mono">Claude (tool use)<br>claude-sonnet-5</td>
+        <td>이미지/텍스트 → {제품명, 성분코드, 효능, 신뢰도}</td>
+        <td><span class="tag done">구현됨</span></td>
+      </tr>
+      <tr>
+        <td><b>데이터층</b></td>
+        <td>① 사용자 복약이력 ② 범용금기 목록 ③ 약-음식 표 저장</td>
+        <td class="mono">Supabase<br>(PostgreSQL)</td>
+        <td>SQL 조회 → 금기쌍·음식·복약이력</td>
+        <td><span class="tag ext">신규 구축</span></td>
+      </tr>
+      <tr>
+        <td><b>분석 node</b><br>(안전 코어)</td>
+        <td>식별 성분 × 복약이력 × 금기목록 대조로 위험 판정</td>
+        <td class="mono">결정론적 규칙엔진<br>(LLM 아님)</td>
+        <td>성분코드 → {병용금기 여부, 사유, 주의음식}</td>
+        <td><span class="tag done">구현됨</span></td>
+      </tr>
+      <tr>
+        <td><b>결과</b></td>
+        <td>판정 결과를 어르신도 이해하게 설명 + 안전문구</td>
+        <td class="mono">Claude<br>(설명 생성)</td>
+        <td>구조화 결과 → 자연어 안내</td>
+        <td><span class="tag done">구현됨</span></td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="callout warn" style="margin-top:14px">
+    <b>핵심 설계 원칙.</b> "위험한지"를 판단하는 <b>분석 node는 절대 LLM에게 맡기지 않습니다.</b> LLM은 (1) 입력을 약 이름으로 바꾸고 (2) 확정된 결과를 쉽게 설명할 뿐이고, 위험 판정 자체는 Supabase의 공식 금기 데이터를 대조하는 결정론적 코드가 합니다. 지어내기(hallucination)를 원천 차단하는 구조라 기술심층·윤리 배점에 유리합니다.
+  </div>
+</section>
+
+<!-- 3. 분석 node 상세 -->
+<section class="wrap">
+  <h2 class="sec"><span class="ic">3</span> 분석 node 상세 (flow.md가 요청한 부분)</h2>
+  <p class="lead">flow.md의 "분석 node 설명"과 "결과 출력 항목 2가지"를 그대로 구현한 로직입니다.</p>
+  <div class="code">
+<span class="c"># 입력: AI Agent가 식별한 성분코드(new_code) + user_id</span>
+<span class="k">def</span> analyze(new_code, user_id):
+    <span class="c"># ① 사용자의 이전 복용약 성분들을 DB에서 조회</span>
+    my_codes = db.query(<span class="y">"SELECT ingredient_code FROM user_medications WHERE user_id=?"</span>, user_id)
+
+    <span class="c"># ② 새 약 × 각 복용약을 '범용금기 목록'과 대조 (결정론적)</span>
+    risks = []
+    <span class="k">for</span> code <span class="k">in</span> my_codes:
+        row = db.query(<span class="y">"SELECT reason FROM dur_contraindications WHERE {new_code,code} 쌍"</span>)
+        <span class="k">if</span> row: risks.append({<span class="y">"상대약"</span>: code, <span class="y">"사유"</span>: row.reason})
+
+    <span class="c"># ③ 약-음식 상호작용 조회</span>
+    foods = db.query(<span class="y">"SELECT food, reason FROM drug_food WHERE ingredient=?"</span>, new_code)
+
+    <span class="k">return</span> {
+        <span class="y">"위험판단"</span>: <span class="y">"위험"</span> <span class="k">if</span> risks <span class="k">else</span> <span class="y">"현재 금기 없음"</span>,   <span class="c"># 결과항목 1</span>
+        <span class="y">"병용금기"</span>: risks,                                    <span class="c"># 이전 복용약과의 위험</span>
+        <span class="y">"주의음식"</span>: foods,                                    <span class="c"># 결과항목 2</span>
+    }
+  </div>
+  <div class="grid2" style="margin-top:16px">
+    <div class="box">
+      <h4>결과 출력 항목 1 — 병용 위험 판단</h4>
+      <ul>
+        <li><b>범용금기 목록 + 이전 복용약</b>을 대조</li>
+        <li>같이 먹으면 위험한 쌍이 있으면 <b>위험 + 사유</b></li>
+        <li>없으면 "현재 금기 없음"으로 명확히</li>
+        <li>이미 구현: <span class="mono">check_interactions()</span></li>
+      </ul>
+    </div>
+    <div class="box">
+      <h4>결과 출력 항목 2 — 주의 음식</h4>
+      <ul>
+        <li>이 약과 함께 먹으면 안 좋은 음식 안내</li>
+        <li>예: 와파린↔비타민K, 스타틴·혈압약↔자몽</li>
+        <li>근거 불확실하면 단정 금지 → 약사 상담</li>
+        <li>이미 구현: <span class="mono">check_food()</span></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- 4. 데이터 스키마 -->
+<section class="wrap">
+  <h2 class="sec"><span class="ic">4</span> Supabase(PostgreSQL) 데이터 스키마</h2>
+  <p class="lead">현재 로컬 CSV(병용금기 15만행)를 Supabase 테이블로 이관합니다. 사용자 복약이력은 앱에서 누적됩니다.</p>
+  <table>
+    <thead><tr><th>테이블</th><th>주요 컬럼</th><th>용도</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">users</td><td class="mono">id, name, age, created_at</td><td>기본정보</td></tr>
+      <tr><td class="mono">user_medications</td><td class="mono">user_id, product_name, ingredient_code, started_at</td><td>이전/현재 복용약 (개인화)</td></tr>
+      <tr><td class="mono">dur_contraindications</td><td class="mono">ingredient_code_1, ingredient_code_2, reason</td><td>범용금기 목록(DUR)</td></tr>
+      <tr><td class="mono">drug_food</td><td class="mono">ingredient_keyword, food, reason</td><td>약-음식 상호작용</td></tr>
+      <tr><td class="mono">drug_master</td><td class="mono">product_name, ingredient_code, ingredient_name, efficacy</td><td>제품명↔성분↔효력 매핑</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- 5. 모델 선택 근거 -->
+<section class="wrap">
+  <h2 class="sec"><span class="ic">5</span> AI 모델 선택 근거</h2>
+  <div class="grid2">
+    <div class="box">
+      <h4>왜 Claude인가 (입력1 · AI Agent · 결과)</h4>
+      <ul>
+        <li>한글 처방전·알약 각인 인식(비전)이 강함</li>
+        <li>도구 호출(tool use)로 결정론적 함수와 자연스럽게 결합</li>
+        <li>어르신 눈높이 설명 생성에 적합</li>
+        <li>기본: <b>claude-sonnet-5</b>(속도·비용) / 어려운 식별은 claude-opus-4-8 폴백</li>
+      </ul>
+    </div>
+    <div class="box">
+      <h4>왜 Naver Clova Speech인가 (입력2)</h4>
+      <ul>
+        <li>한국어 음성인식 정확도·발음 대응 우수</li>
+        <li>어르신·비문해 사용자의 접근성 확보(SDOH 대응)</li>
+        <li>STT 결과 텍스트를 그대로 AI Agent로 전달</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- 6. 구현 현황 -->
+<section class="wrap">
+  <h2 class="sec"><span class="ic">6</span> 구현 현황 & 남은 작업</h2>
+  <table>
+    <thead><tr><th>구성요소</th><th>현재 상태</th><th>비고</th></tr></thead>
+    <tbody>
+      <tr><td>병용금기 판정 (분석 node 코어)</td><td><span class="tag done">완료</span></td><td class="mono">check_interactions() · DUR 15만행 로드</td></tr>
+      <tr><td>약-음식 상호작용</td><td><span class="tag done">완료</span></td><td class="mono">check_food()</td></tr>
+      <tr><td>약 이름 유사매칭</td><td><span class="tag done">완료</span></td><td class="mono">resolve_drug() · rapidfuzz</td></tr>
+      <tr><td>알약 사진 식별</td><td><span class="tag done">완료</span></td><td class="mono">identify_and_check.py · Claude 비전</td></tr>
+      <tr><td>챗봇(도구 호출 오케스트레이션)</td><td><span class="tag done">완료</span></td><td class="mono">pharma_chatbot.py</td></tr>
+      <tr><td>음성 입력(Clova STT)</td><td><span class="tag todo">예정</span></td><td>STT → 텍스트 → 기존 파이프라인</td></tr>
+      <tr><td>Supabase 이관 + 복약이력</td><td><span class="tag todo">예정</span></td><td>CSV → PostgreSQL, 사용자별 이력 저장</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- 7. 안전/윤리 + 유료 -->
+<section class="wrap">
+  <h2 class="sec"><span class="ic">7</span> 안전·윤리 설계 & 유료 사용 (PPT 필수)</h2>
+  <div class="grid2">
+    <div class="box">
+      <h4>안전 · 윤리</h4>
+      <ul>
+        <li>위험 판정은 결정론적 코어가 담당 → 지어내기 차단</li>
+        <li>근거 불확실 시 단정 금지 → 약사 상담 권고</li>
+        <li>모든 결과 끝에 "정확한 판단은 약사·의사와 상담"</li>
+        <li>의료행위가 아닌 정보 제공 명시, 개인정보 최소수집</li>
+      </ul>
+    </div>
+    <div class="box">
+      <h4>유료 API · 인프라 (아키텍처 페이지용)</h4>
+      <ul>
+        <li>Claude API (비전·에이전트·설명 생성)</li>
+        <li>Naver Clova Speech (음성 STT)</li>
+        <li>Supabase (PostgreSQL 호스팅)</li>
+        <li>GPU: 로컬 학습 없음(추론은 API) — 비용 효율적</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<footer class="wrap">
+  약손 AI 모델 설계서 · flow.md / 흐름.jpg 기반 · 2026-07 · 복약안전 멀티모달 에이전트
+</footer>
+
+</body>
+</html>
