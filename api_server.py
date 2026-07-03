@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 import chatbot_core as cc                          # 데이터/챗봇/도구 재사용
 from dur_agent_starter import resolve_drug, check_interactions
+from datetime import datetime, timezone
 
 app = FastAPI(title="약속 API", version="2.0")
 app.add_middleware(
@@ -30,6 +31,7 @@ app.add_middleware(
 # 간단한 인메모리 저장소 (데모용 — 서버 재시작 시 초기화)
 PATIENTS = {}
 _counter = {"n": 0}
+_drug_seq = {"n": 0}
 
 
 def _new_id():
@@ -37,17 +39,61 @@ def _new_id():
     return f"p{_counter['n']}"
 
 
-def _resolve_entry(text):
-    """약 이름 텍스트 하나 -> 프론트가 기대하는 drug 객체."""
-    text = str(text).strip()
-    r = resolve_drug(text, cc._PRODUCT_TO_CODE, score_cutoff=60)
+def _match_drug(info):
+    """Claude 추출 정보(dict) -> HIRA(DUR) 성분코드 매칭."""
+    name = str(info.get("약품명") or "").strip()
+    ingr = str(info.get("성분명") or "").strip()
+    r = resolve_drug(name, cc._PRODUCT_TO_CODE, score_cutoff=60) if name else None
+    if not r and ingr:
+        r = resolve_drug(ingr, cc._PRODUCT_TO_CODE, score_cutoff=60)
     if r:
         code = r["성분코드"]
-        return {"source_text": text, "product_name": r["매칭품목"],
-                "ingredient_code": code, "ingr_name": cc._NAME_OF.get(code, ""),
-                "efficacy_group": "", "prescribing_dept": "", "match_status": "matched"}
-    return {"source_text": text, "product_name": text, "ingredient_code": None,
-            "ingr_name": "", "efficacy_group": "", "prescribing_dept": "", "match_status": "unmatched"}
+        status = "matched" if r["신뢰도"] >= 80 else "ambiguous"
+        return {"ingr_code": code, "ingr_name": cc._NAME_OF.get(code, ""),
+                "product_name": r["매칭품목"], "company": "", "match": status}
+    return {"ingr_code": None, "ingr_name": None,
+            "product_name": (name or ingr), "company": None, "match": "not_found"}
+
+
+def _make_row(info, patient_id, input_type):
+    """추출 정보 + 매칭 -> 저장 row (내부에 원문 _info 보관)."""
+    m = _match_drug(info)
+    _drug_seq["n"] += 1
+    return {
+        "id": _drug_seq["n"], "patient_id": patient_id,
+        "ingr_code": m["ingr_code"], "ingr_name": m["ingr_name"],
+        "product_name": m["product_name"],
+        "efficacy_group": str(info.get("효능군") or ""),
+        "prescribing_dept": str(info.get("처방과") or ""),
+        "company": m["company"], "source_text": str(info.get("성분명") or ""),
+        "input_type": input_type, "match_status": m["match"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "_info": info,
+    }
+
+
+def _post_item(row):
+    """POST 응답 형식 (한글 키 + match + collected_drug_id)."""
+    info = row["_info"]
+    keys = ["약품명", "성분명", "효능군", "처방과", "낱알_모양", "낱알_색상",
+            "낱알_각인_앞", "낱알_각인_뒤", "낱알_분할선_앞", "낱알_분할선_뒤"]
+    item = {k: str(info.get(k) or "") for k in keys}
+    item.update({"product_name": row["product_name"], "source_text": row["source_text"],
+                 "ingr_code": row["ingr_code"], "ingr_name": row["ingr_name"],
+                 "company": row["company"], "match": row["match_status"],
+                 "collected_drug_id": row["id"]})
+    return item
+
+
+def _raw_row(row):
+    """GET 응답 형식 (raw DB row, _info 제외)."""
+    return {k: v for k, v in row.items() if k != "_info"}
+
+
+def _add_from_infos(patient, infos, input_type):
+    rows = [_make_row(info, patient["id"], input_type) for info in infos]
+    patient["drugs"].extend(rows)
+    return [_post_item(r) for r in rows]
 
 
 def _get_patient(pid):
@@ -83,19 +129,11 @@ class TextReq(BaseModel):
     text: str
 
 
-def _add_drugs(patient, names):
-    added = [_resolve_entry(n) for n in names if str(n).strip()]
-    patient["drugs"].extend(added)
-    return added
-
-
 @app.post("/api/ocr/text")
 def ocr_text(req: TextReq):
     patient = _get_patient(req.patient_id)
-    names = cc.extract_drugs_from_text(req.text)        # 문장에서 약 이름 추출
-    if not names:
-        names = [req.text]                              # 못 뽑으면 원문 그대로 시도
-    return {"drugs": _add_drugs(patient, names)}
+    infos = cc.extract_drug_info_from_text(req.text)     # 구조화 추출
+    return {"drugs": _add_from_infos(patient, infos, "text")}
 
 
 @app.post("/api/ocr/image")
@@ -104,13 +142,13 @@ async def ocr_image(patient_id: str = Form(...), extra_text: str = Form(""),
     patient = _get_patient(patient_id)
     data = await file.read()
     media = file.content_type or "image/jpeg"
-    names = cc.extract_drugs_from_image(data, media)    # Claude 비전
-    return {"drugs": _add_drugs(patient, names)}
+    infos = cc.extract_drug_info_from_image(data, media, extra_text)   # Claude 비전
+    return {"drugs": _add_from_infos(patient, infos, "image")}
 
 
 @app.get("/api/ocr/{patient_id}")
 def list_drugs(patient_id: str):
-    return {"drugs": _get_patient(patient_id)["drugs"]}
+    return {"drugs": [_raw_row(r) for r in _get_patient(patient_id)["drugs"]]}
 
 
 # ============================================================
@@ -123,7 +161,7 @@ class AnalyzeReq(BaseModel):
 @app.post("/api/analyze")
 def analyze(req: AnalyzeReq):
     patient = _get_patient(req.patient_id)
-    codes = [d["ingredient_code"] for d in patient["drugs"] if d.get("ingredient_code")]
+    codes = [d["ingr_code"] for d in patient["drugs"] if d.get("ingr_code")]
     alerts = check_interactions(codes, cc._PARTNERS, cc._NAME_OF)   # ★ 공식 데이터 판정
     return {
         "병용금기_flag": len(alerts) > 0,
@@ -160,11 +198,12 @@ async def transcribe(patient_id: str = Form(...), auto_parse: str = Form("true")
         text = tr.text
     except Exception as e:
         raise HTTPException(status_code=500, detail="음성 인식 실패: " + str(e))
-    drugs = []
+    result = {"text": text}
     if auto_parse == "true" and text.strip():
-        names = cc.extract_drugs_from_text(text)
-        drugs = _add_drugs(patient, names)
-    return {"text": text, "drugs": drugs}
+        infos = cc.extract_drug_info_from_text(text)
+        if infos:
+            result["drugs"] = _add_from_infos(patient, infos, "voice")   # ocr와 동일 형식
+    return result
 
 
 # ============================================================
