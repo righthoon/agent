@@ -41,7 +41,7 @@ function sx(str){
 class App extends React.Component {
   constructor(props){
     super(props);
-    this.DEFAULT_BASE = "https://web-production-bf56f.up.railway.app";
+    this.DEFAULT_BASE = "http://localhost:8000";
     this.state = {
       screen:'start', tab:'home', inputTab:'photo',
       patient:null, drugs:[], analysis:null,
@@ -543,7 +543,7 @@ class App extends React.Component {
             <div style={sx("background:#fff;border:1px solid #EFEDE6;border-radius:18px;padding:18px")}>
               <div style={sx("font-size:14px;font-weight:800;color:#3A342C;margin-bottom:12px")}>서버·챗봇 설정 <span style={sx("color:#A39A8C;font-weight:500")}>(개발용)</span></div>
               <label style={sx("display:block;font-size:13px;font-weight:700;color:#6B6459;margin-bottom:6px")}>분석 서버 주소</label>
-              <input ref={this.baseRef} type="text" defaultValue="https://web-production-bf56f.up.railway.app" style={sx("width:100%;padding:12px 13px;border:1.5px solid #E6E2D8;border-radius:11px;font-size:14px;font-family:inherit;background:#FBFAF7;color:#1A1712")} />
+              <input ref={this.baseRef} type="text" defaultValue="http://localhost:8000" style={sx("width:100%;padding:12px 13px;border:1.5px solid #E6E2D8;border-radius:11px;font-size:14px;font-family:inherit;background:#FBFAF7;color:#1A1712")} />
               <div style={sx("font-size:12.5px;color:#4A7A4A;background:#EAF3EC;border-radius:11px;padding:12px 13px;margin-top:12px;line-height:1.6")}>✅ 챗봇 API 키는 이제 <b>서버</b>에 안전하게 보관돼요. 앱에는 키를 넣지 않아도 챗봇이 바로 작동합니다.</div>
             </div>
             <div style={sx("font-size:12.5px;color:#A39A8C;text-align:center;line-height:1.6;padding:0 10px")}>약속은 참고용 복약 안전 정보를 제공하며 의료 행위가 아닙니다.<br/>정확한 판단은 약사·의사와 상담하세요.</div>
