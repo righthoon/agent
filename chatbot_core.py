@@ -132,6 +132,66 @@ def extract_drugs_from_image(image_bytes, media_type="image/jpeg"):
         return []
 
 
+def extract_drugs_from_text(text):
+    """자유 문장(직접입력·음성 받아쓰기)에서 약 이름만 추출 -> 리스트."""
+    prompt = (
+        "다음 문장에서 '약 이름'만 모두 뽑아라. 용량(예: 500mg)이 있으면 이름 뒤에 붙여라. "
+        '오직 JSON 배열만 출력하라. 예: ["타이레놀정 500mg", "아스피린"]. 약이 없으면 [] 만.\n'
+        "문장: " + str(text)
+    )
+    resp = _client.messages.create(
+        model=MODEL, max_tokens=400,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    out = "".join(b.text for b in resp.content if b.type == "text")
+    m = re.search(r"\[.*\]", out, re.DOTALL)
+    try:
+        return json.loads(m.group(0)) if m else []
+    except json.JSONDecodeError:
+        return []
+
+
+# ── 구조화 추출: 약품명/성분명/효능군/처방과(+알약이면 낱알 정보) ──────
+_DRUG_JSON = (
+    '각 약마다 아래 JSON 객체를 만들어 배열로 반환하라. 오직 JSON 배열만 출력하라.\n'
+    '{"약품명":"","성분명":"","효능군":"","처방과":"",'
+    '"낱알_모양":"","낱알_색상":"","낱알_각인_앞":"","낱알_각인_뒤":"","낱알_분할선_앞":"","낱알_분할선_뒤":""}\n'
+    '규칙: 약품명=제품명(용량 포함), 성분명=주성분(영문 가능). 효능군/처방과는 알면 적고 모르면 빈 문자열. '
+    '낱알_* 는 포장 없이 알약만 보이는 사진일 때만 채우고, 포장·처방전·텍스트면 모두 빈 문자열. 약이 없으면 [].'
+)
+
+
+def _drug_info_call(content):
+    resp = _client.messages.create(model=MODEL, max_tokens=1200,
+                                   messages=[{"role": "user", "content": content}])
+    out = "".join(b.text for b in resp.content if b.type == "text")
+    m = re.search(r"\[.*\]", out, re.DOTALL)
+    try:
+        data = json.loads(m.group(0)) if m else []
+        return [d for d in data if isinstance(d, dict)]
+    except json.JSONDecodeError:
+        return []
+
+
+def extract_drug_info_from_text(text):
+    """문장 -> [{약품명,성분명,효능군,처방과,낱알_*}]"""
+    prompt = "다음 문장에서 약을 찾아라.\n문장: " + str(text) + "\n\n" + _DRUG_JSON
+    return _drug_info_call([{"type": "text", "text": prompt}])
+
+
+def extract_drug_info_from_image(image_bytes, media_type="image/jpeg", extra_text=""):
+    """약봉투/처방전/알약 사진 -> [{약품명,성분명,효능군,처방과,낱알_*}]"""
+    b64 = base64.standard_b64encode(image_bytes).decode()
+    t = "이 사진(약봉투/처방전/알약)에서 약을 찾아라."
+    if extra_text:
+        t += " 사용자 보충 설명: " + str(extra_text)
+    t += "\n\n" + _DRUG_JSON
+    return _drug_info_call([
+        {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
+        {"type": "text", "text": t},
+    ])
+
+
 # ── Claude 도구 설명서 + 규칙 ───────────────────────────────
 _TOOLS = [
     {
