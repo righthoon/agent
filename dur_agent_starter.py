@@ -198,12 +198,6 @@ def check_by_product_names(name1, name2, partners, name_of,
 # 이 그래프 다이어그램을 PPT 18~19p에 그대로 넣으면 심층점수.
 # ============================================================
 from typing import TypedDict, List
-try:
-    from langgraph.graph import StateGraph, END
-    from langchain_anthropic import ChatAnthropic
-    LANGGRAPH_AVAILABLE = True
-except ImportError:
-    LANGGRAPH_AVAILABLE = False
 
 
 class AgentState(TypedDict):
@@ -216,6 +210,9 @@ class AgentState(TypedDict):
 
 def build_agent(partners, name_to_ingredient, edrug_index=None):
     """상태 그래프 조립. edrug_index는 챗봇 RAG용(③) — 없으면 챗봇 생략."""
+    # 무거운 라이브러리는 이 함수를 실제로 쓸 때만 import (평소 시작 속도 개선)
+    from langgraph.graph import StateGraph, END
+    from langchain_anthropic import ChatAnthropic
     llm = ChatAnthropic(model="claude-sonnet-4-6", max_tokens=1000)
 
     def node_resolve(state: AgentState):
