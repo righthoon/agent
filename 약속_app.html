@@ -198,30 +198,20 @@ class App extends React.Component {
   }
   async sendChat(){
     const q=(this.chatRef.current.value||'').trim(); if(!q) return;
-    if(!this.apiKey()){
-      this.toast('챗봇을 쓰려면 내 정보 › 설정에서 API 키를 넣어주세요.');
-      this.setState(s=>({messages:[...s.messages,{role:'bot',text:'챗봇을 사용하려면 하단 [내 정보] › 설정에서 Anthropic API 키를 입력해 주세요. (테스트용, 저장되지 않아요)'}]}));
-      return;
-    }
     this.chatRef.current.value='';
-    const history=[...this.state.chatHistory,{role:'user',content:q}];
-    this.setState(s=>({messages:[...s.messages,{role:'user',text:q}], chatHistory:history, chatting:true}));
-    const drugNames=this.state.drugs.map(d=>d.product_name||d.ingr_name).filter(Boolean);
-    const a=this.state.analysis;
-    const flags=a?Object.keys(a).filter(k=>k.endsWith('_flag')&&a[k]):[];
-    const context='[사용자가 현재 복용 중인 약]: '+(drugNames.length?drugNames.join(', '):'아직 입력 안 됨')+'\n'+
-      '[방금 검사에서 걸린 항목]: '+(flags.length?flags.join(', '):'아직 검사 안 했거나 특이사항 없음');
-    const systemPrompt="너는 '약속'이라는 복약 안전 상담 도우미야. 고령 사용자가 많으니 쉽고 따뜻하게, 짧게 답해.\n- 약 병용금기/중복, 약-음식 상호작용, 복약 방법, 기본 건강 상담에 답한다.\n- 약물 안전의 '확정 판정'은 이 앱의 분석 기능이 공식 데이터로 이미 수행한다. 너는 그 결과를 쉽게 설명하고 일반 정보를 제공하되, 위험을 단정하지 말 것.\n- 확실하지 않으면 추측하지 말고 약사·의사 상담을 권한다.\n- 진단·처방은 하지 않는다(의료행위 아님).\n\n"+context;
+    const prior=this.state.chatHistory;                 // 이전 대화(질문 추가 전)
+    this.setState(s=>({messages:[...s.messages,{role:'user',text:q}], chatHistory:[...prior,{role:'user',content:q}], chatting:true}));
+    const meds=this.state.drugs.map(d=>d.product_name||d.ingr_name).filter(Boolean);
     try{
-      const res=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',
-        headers:{'Content-Type':'application/json','x-api-key':this.apiKey(),'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-        body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:600,system:systemPrompt,messages:history})});
-      if(!res.ok){ const e=await res.json().catch(()=>({})); throw new Error((e.error&&e.error.message)||('HTTP '+res.status)); }
+      // 앱은 키를 모른다 — 내 백엔드(/chat)로 보내고, 서버가 자기 키로 Anthropic 호출
+      const res=await fetch(this.base()+'/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({message:q, meds, history:prior})});
+      if(!res.ok){ const e=await res.json().catch(()=>({})); throw new Error(e.detail||('HTTP '+res.status)); }
       const data=await res.json();
-      const answer=(data.content||[]).map(c=>c.text||'').join('').trim()||'죄송해요, 답변을 만들지 못했어요.';
+      const answer=data.answer||'죄송해요, 답변을 만들지 못했어요.';
       this.setState(s=>({messages:[...s.messages,{role:'bot',text:answer}], chatHistory:[...s.chatHistory,{role:'assistant',content:answer}], chatting:false}));
     }catch(err){
-      this.setState(s=>({messages:[...s.messages,{role:'bot',text:'답변 중 문제가 생겼어요: '+err.message+'\n(내 정보 › 설정의 API 키를 확인해 주세요.)'}], chatting:false}));
+      this.setState(s=>({messages:[...s.messages,{role:'bot',text:'답변 중 문제가 생겼어요: '+err.message+' (서버가 켜져 있는지, 내 정보의 서버 주소가 맞는지 확인해 주세요.)'}], chatting:false}));
     }
   }
 
@@ -554,9 +544,7 @@ class App extends React.Component {
               <div style={sx("font-size:14px;font-weight:800;color:#3A342C;margin-bottom:12px")}>서버·챗봇 설정 <span style={sx("color:#A39A8C;font-weight:500")}>(개발용)</span></div>
               <label style={sx("display:block;font-size:13px;font-weight:700;color:#6B6459;margin-bottom:6px")}>분석 서버 주소</label>
               <input ref={this.baseRef} type="text" defaultValue="https://web-production-bf56f.up.railway.app" style={sx("width:100%;padding:12px 13px;border:1.5px solid #E6E2D8;border-radius:11px;font-size:14px;font-family:inherit;background:#FBFAF7;color:#1A1712")} />
-              <label style={sx("display:block;font-size:13px;font-weight:700;color:#6B6459;margin:14px 0 6px")}>챗봇 Anthropic API 키</label>
-              <input ref={this.keyRef} type="password" placeholder="sk-ant-... (테스트 시에만, 저장 안 됨)" style={sx("width:100%;padding:12px 13px;border:1.5px solid #E6E2D8;border-radius:11px;font-size:14px;font-family:inherit;background:#FBFAF7;color:#1A1712")} />
-              <div style={sx("font-size:12px;color:#A39A8C;margin-top:10px;line-height:1.6")}>이 키는 브라우저 메모리에만 잠깐 쓰이고 새로고침하면 사라져요. 파일·서버에 저장되지 않습니다.</div>
+              <div style={sx("font-size:12.5px;color:#4A7A4A;background:#EAF3EC;border-radius:11px;padding:12px 13px;margin-top:12px;line-height:1.6")}>✅ 챗봇 API 키는 이제 <b>서버</b>에 안전하게 보관돼요. 앱에는 키를 넣지 않아도 챗봇이 바로 작동합니다.</div>
             </div>
             <div style={sx("font-size:12.5px;color:#A39A8C;text-align:center;line-height:1.6;padding:0 10px")}>약속은 참고용 복약 안전 정보를 제공하며 의료 행위가 아닙니다.<br/>정확한 판단은 약사·의사와 상담하세요.</div>
           </div>
