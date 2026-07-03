@@ -41,7 +41,9 @@ function sx(str){
 class App extends React.Component {
   constructor(props){
     super(props);
-    this.DEFAULT_BASE = "http://localhost:8000";
+    // 두 백엔드: ①환자/OCR/분석/음성(VLM) ②챗봇(agent, 이 저장소)
+    this.DEFAULT_API_BASE = "https://web-production-bf56f.up.railway.app";
+    this.DEFAULT_CHAT_BASE = "https://web-production-f3323.up.railway.app";
     this.state = {
       screen:'start', tab:'home', inputTab:'photo',
       patient:null, drugs:[], analysis:null,
@@ -49,13 +51,13 @@ class App extends React.Component {
       chatHistory:[],
       toast:'', registering:false, analyzing:false, chatting:false, recording:false, chatRecording:false, voiceHeard:''
     };
-    ['nameRef','ageRef','condRef','textRef','chatRef','fileRef','baseRef','keyRef','chatLogRef']
+    ['nameRef','ageRef','condRef','textRef','chatRef','fileRef','apiBaseRef','chatBaseRef','chatLogRef']
       .forEach(k=> this[k]=React.createRef());
     this._toastT=null; this._rec=null; this._stream=null; this._chunks=[];
   }
   componentDidUpdate(){ const el=this.chatLogRef.current; if(el && this.state.tab==='chat') el.scrollTop=el.scrollHeight; }
-  base(){ const v=(this.baseRef.current && this.baseRef.current.value) || this.DEFAULT_BASE; return String(v).trim().replace(/\/$/,''); }
-  apiKey(){ return String((this.keyRef.current && this.keyRef.current.value)||'').trim(); }
+  apiBase(){ const v=(this.apiBaseRef.current && this.apiBaseRef.current.value) || this.DEFAULT_API_BASE; return String(v).trim().replace(/\/$/,''); }
+  chatBase(){ const v=(this.chatBaseRef.current && this.chatBaseRef.current.value) || this.DEFAULT_CHAT_BASE; return String(v).trim().replace(/\/$/,''); }
   toast(m){ this.setState({toast:m}); clearTimeout(this._toastT); this._toastT=setTimeout(()=>this.setState({toast:''}),2600); }
   nav(tab){ this.setState({tab}); }
 
@@ -68,7 +70,7 @@ class App extends React.Component {
     const conditions=condRaw?condRaw.split(',').map(s=>s.trim()).filter(Boolean):[];
     this.setState({registering:true});
     try{
-      const res=await fetch(this.base()+'/api/patients',{method:'POST',headers:{'Content-Type':'application/json'},
+      const res=await fetch(this.apiBase()+'/api/patients',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({last_name:name,age,underlying_conditions:conditions})});
       if(!res.ok) throw new Error((await res.json().catch(()=>({}))).detail||'등록 실패');
       const data=await res.json();
@@ -86,7 +88,7 @@ class App extends React.Component {
     const form=new FormData(); form.append('patient_id',p.id); form.append('extra_text',''); form.append('file',file);
     this.toast('사진을 읽는 중…');
     try{
-      const res=await fetch(this.base()+'/api/ocr/image',{method:'POST',body:form});
+      const res=await fetch(this.apiBase()+'/api/ocr/image',{method:'POST',body:form});
       if(!res.ok) throw new Error((await res.json().catch(()=>({}))).detail||'인식 실패');
       await this.handleNewDrugs((await res.json()).drugs);
     }catch(err){ this.toast('사진 인식 실패: '+err.message); }
@@ -98,7 +100,7 @@ class App extends React.Component {
     const p=this.state.patient;
     this.toast('추가하는 중…');
     try{
-      const res=await fetch(this.base()+'/api/ocr/text',{method:'POST',headers:{'Content-Type':'application/json'},
+      const res=await fetch(this.apiBase()+'/api/ocr/text',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({patient_id:p.id,text})});
       if(!res.ok) throw new Error((await res.json().catch(()=>({}))).detail||'추가 실패');
       this.textRef.current.value='';
@@ -136,7 +138,7 @@ class App extends React.Component {
     this.toast('들은 내용: '+text);
     const p=this.state.patient; if(!p) return;
     try{
-      const res=await fetch(this.base()+'/api/ocr/text',{method:'POST',headers:{'Content-Type':'application/json'},
+      const res=await fetch(this.apiBase()+'/api/ocr/text',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({patient_id:p.id,text})});
       if(!res.ok) throw new Error((await res.json().catch(()=>({}))).detail||'추가 실패');
       await this.handleNewDrugs((await res.json()).drugs);
@@ -147,7 +149,7 @@ class App extends React.Component {
     const blob=new Blob(this._chunks,{type:'audio/webm'});
     const form=new FormData(); form.append('patient_id',p.id); form.append('auto_parse','true'); form.append('file',blob,'recording.webm');
     try{
-      const res=await fetch(this.base()+'/api/speech/transcribe',{method:'POST',body:form});
+      const res=await fetch(this.apiBase()+'/api/speech/transcribe',{method:'POST',body:form});
       if(!res.ok) throw new Error((await res.json().catch(()=>({}))).detail||'인식 실패');
       const data=await res.json();
       if(data.text) this.toast('들은 내용: '+data.text);
@@ -162,7 +164,7 @@ class App extends React.Component {
   async refreshDrugs(){
     const p=this.state.patient; if(!p) return;
     try{
-      const res=await fetch(this.base()+'/api/ocr/'+p.id);
+      const res=await fetch(this.apiBase()+'/api/ocr/'+p.id);
       if(!res.ok) throw new Error('목록 조회 실패');
       this.setState({drugs:(await res.json()).drugs||[]});
     }catch(err){}
@@ -172,7 +174,7 @@ class App extends React.Component {
     if(!this.state.drugs.length){ this.toast('먼저 약을 입력해 주세요.'); this.nav('meds'); return; }
     this.setState({analyzing:true});
     try{
-      const res=await fetch(this.base()+'/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
+      const res=await fetch(this.apiBase()+'/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({patient_id:p.id})});
       if(!res.ok) throw new Error((await res.json().catch(()=>({}))).detail||'검사 실패');
       this.setState({analysis:await res.json(), analyzing:false, tab:'result'});
@@ -204,7 +206,7 @@ class App extends React.Component {
     const meds=this.state.drugs.map(d=>d.product_name||d.ingr_name).filter(Boolean);
     try{
       // 앱은 키를 모른다 — 내 백엔드(/chat)로 보내고, 서버가 자기 키로 Anthropic 호출
-      const res=await fetch(this.base()+'/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+      const res=await fetch(this.chatBase()+'/chat',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({message:q, meds, history:prior})});
       if(!res.ok){ const e=await res.json().catch(()=>({})); throw new Error(e.detail||('HTTP '+res.status)); }
       const data=await res.json();
@@ -541,10 +543,12 @@ class App extends React.Component {
               <div><div style={sx("font-size:19px;font-weight:800;color:#1A1712")}>{v.profileName}</div><div style={sx("font-size:13.5px;color:#8A8175;margin-top:2px")}>{v.profileMeta}</div></div>
             </div>
             <div style={sx("background:#fff;border:1px solid #EFEDE6;border-radius:18px;padding:18px")}>
-              <div style={sx("font-size:14px;font-weight:800;color:#3A342C;margin-bottom:12px")}>서버·챗봇 설정 <span style={sx("color:#A39A8C;font-weight:500")}>(개발용)</span></div>
-              <label style={sx("display:block;font-size:13px;font-weight:700;color:#6B6459;margin-bottom:6px")}>분석 서버 주소</label>
-              <input ref={this.baseRef} type="text" defaultValue="http://localhost:8000" style={sx("width:100%;padding:12px 13px;border:1.5px solid #E6E2D8;border-radius:11px;font-size:14px;font-family:inherit;background:#FBFAF7;color:#1A1712")} />
-              <div style={sx("font-size:12.5px;color:#4A7A4A;background:#EAF3EC;border-radius:11px;padding:12px 13px;margin-top:12px;line-height:1.6")}>✅ 챗봇 API 키는 이제 <b>서버</b>에 안전하게 보관돼요. 앱에는 키를 넣지 않아도 챗봇이 바로 작동합니다.</div>
+              <div style={sx("font-size:14px;font-weight:800;color:#3A342C;margin-bottom:12px")}>서버 설정 <span style={sx("color:#A39A8C;font-weight:500")}>(개발용, 평소엔 안 건드려도 돼요)</span></div>
+              <label style={sx("display:block;font-size:13px;font-weight:700;color:#6B6459;margin-bottom:6px")}>분석 서버 주소 (환자·사진·음성·검사)</label>
+              <input ref={this.apiBaseRef} type="text" defaultValue={this.DEFAULT_API_BASE} style={sx("width:100%;padding:12px 13px;border:1.5px solid #E6E2D8;border-radius:11px;font-size:14px;font-family:inherit;background:#FBFAF7;color:#1A1712")} />
+              <label style={sx("display:block;font-size:13px;font-weight:700;color:#6B6459;margin:14px 0 6px")}>챗봇 서버 주소</label>
+              <input ref={this.chatBaseRef} type="text" defaultValue={this.DEFAULT_CHAT_BASE} style={sx("width:100%;padding:12px 13px;border:1.5px solid #E6E2D8;border-radius:11px;font-size:14px;font-family:inherit;background:#FBFAF7;color:#1A1712")} />
+              <div style={sx("font-size:12.5px;color:#4A7A4A;background:#EAF3EC;border-radius:11px;padding:12px 13px;margin-top:12px;line-height:1.6")}>✅ 챗봇 API 키는 서버에 안전하게 보관돼요. 앱에는 키를 넣지 않아도 챗봇이 바로 작동합니다.</div>
             </div>
             <div style={sx("font-size:12.5px;color:#A39A8C;text-align:center;line-height:1.6;padding:0 10px")}>약속은 참고용 복약 안전 정보를 제공하며 의료 행위가 아닙니다.<br/>정확한 판단은 약사·의사와 상담하세요.</div>
           </div>
