@@ -132,6 +132,25 @@ def extract_drugs_from_image(image_bytes, media_type="image/jpeg"):
         return []
 
 
+def extract_drugs_from_text(text):
+    """자유 문장(직접입력·음성 받아쓰기)에서 약 이름만 추출 -> 리스트."""
+    prompt = (
+        "다음 문장에서 '약 이름'만 모두 뽑아라. 용량(예: 500mg)이 있으면 이름 뒤에 붙여라. "
+        '오직 JSON 배열만 출력하라. 예: ["타이레놀정 500mg", "아스피린"]. 약이 없으면 [] 만.\n'
+        "문장: " + str(text)
+    )
+    resp = _client.messages.create(
+        model=MODEL, max_tokens=400,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    out = "".join(b.text for b in resp.content if b.type == "text")
+    m = re.search(r"\[.*\]", out, re.DOTALL)
+    try:
+        return json.loads(m.group(0)) if m else []
+    except json.JSONDecodeError:
+        return []
+
+
 # ── Claude 도구 설명서 + 규칙 ───────────────────────────────
 _TOOLS = [
     {

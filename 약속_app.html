@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>약속 · 복약 안전 지킴이</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css">
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#ECEAE4;font-family:"Pretendard",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+  @keyframes ykspin{to{transform:rotate(360deg)}}
+  @keyframes ykfade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .yk-spin{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:ykspin .7s linear infinite;vertical-align:-3px;margin-right:7px}
+  .yk-scroll::-webkit-scrollbar{width:0}
+  input:focus,textarea:focus{outline:none;border-color:#0052FF !important;box-shadow:0 0 0 3px #E6EEFF !important;background:#fff !important}
+  button{transition:filter .15s}
+  button:hover{filter:brightness(1.03)}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+// CSS 문자열 -> React style 객체로 변환 (디자인의 inline 스타일을 그대로 쓰기 위함)
+function sx(str){
+  const o={};
+  String(str||'').split(';').forEach(r=>{
+    r=r.trim(); if(!r) return;
+    const i=r.indexOf(':'); if(i<0) return;
+    let k=r.slice(0,i).trim(), v=r.slice(i+1).trim();
+    k=k.replace(/-([a-z])/g,(m,c)=>c.toUpperCase());
+    o[k]=v;
+  });
+  return o;
+}
+
+class App extends React.Component {
+  constructor(props){
+    super(props);
+    this.DEFAULT_BASE = "https://web-production-bf56f.up.railway.app";
+    this.state = {
+      screen:'start', tab:'home', inputTab:'photo',
+      patient:null, drugs:[], analysis:null,
+      messages:[{role:'bot', text:'안녕하세요, 약속이에요. 드시는 약이나 건강에 대해 궁금한 걸 편하게 물어보세요.'}],
+      chatHistory:[],
+      toast:'', registering:false, analyzing:false, chatting:false, recording:false, chatRecording:false, voiceHeard:''
+    };
+    ['nameRef','ageRef','condRef','textRef','chatRef','fileRef','baseRef','keyRef','chatLogRef']
+      .forEach(k=> this[k]=React.createRef());
+    this._toastT=null; this._rec=null; this._stream=null; this._chunks=[];
+  }
+  componentDidUpdate(){ const el=this.chatLogRef.current; if(el && this.state.tab==='chat') el.scrollTop=el.scrollHeight; }
+  base(){ const v=(this.baseRef.current && this.baseRef.current.value) || this.DEFAULT_BASE; return String(v).trim().replace(/\/$/,''); }
+  apiKey(){ return String((this.keyRef.current && this.keyRef.current.value)||'').trim(); }
+  toast(m){ this.setState({toast:m}); clearTimeout(this._toastT); this._toastT=setTimeout(()=>this.setState({toast:''}),2600); }
+  nav(tab){ this.setState({tab}); }
+
+  async registerPatient(){
+    const name=(this.nameRef.current.value||'').trim();
+    const age=parseInt(this.ageRef.current.value,10);
+    const condRaw=(this.condRef.current.value||'').trim();
+    if(!name){ this.toast('성함을 입력해 주세요.'); return; }
+    if(isNaN(age)||age<0||age>149){ this.toast('나이를 올바르게 입력해 주세요.'); return; }
+    const conditions=condRaw?condRaw.split(',').map(s=>s.trim()).filter(Boolean):[];
+    this.setState({registering:true});
+    try{
+      const res=await fetch(this.base()+'/api/patients',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({last_name:name,age,underlying_conditions:conditions})});
+      if(!res.ok) throw new Error((await res.json().catch(()=>({}))).detail||'등록 실패');
+      const data=await res.json();
+      this.setState({patient:data, screen:'app', tab:'home', registering:false});
+      this.toast('등록 완료! 이제 약을 입력하세요.');
+    }catch(err){
+      this.setState({patient:{id:'local', last_name:name, age, underlying_conditions:conditions}, screen:'app', tab:'home', registering:false});
+      this.toast('오프라인 모드로 시작합니다 ('+err.message+')');
+    }
+  }
+  onPickFile(){ this.fileRef.current && this.fileRef.current.click(); }
+  async uploadImage(e){
+    const file=e.target.files && e.target.files[0]; if(!file) return;
+    const p=this.state.patient; if(!p) return;
+    const form=new FormData(); form.append('patient_id',p.id); form.append('extra_text',''); form.append('file',file);
+    this.toast('사진을 읽는 중…');
+    try{
+      const res=await fetch(this.base()+'/api/ocr/image',{method:'POST',body:form});
+      if(!res.ok) throw new Error((await res.json().catch(()=>({}))).detail||'인식 실패');
+      await this.handleNewDrugs((await res.json()).drugs);
+    }catch(err){ this.toast('사진 인식 실패: '+err.message); }
+    if(this.fileRef.current) this.fileRef.current.value='';
+  }
+  async submitText(){
+    const text=(this.textRef.current.value||'').trim();
+    if(!text){ this.toast('약 이름을 입력해 주세요.'); return; }
+    const p=this.state.patient;
+    this.toast('추가하는 중…');
+    try{
+      const res=await fetch(this.base()+'/api/ocr/text',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({patient_id:p.id,text})});
+      if(!res.ok) throw new Error((await res.json().catch(()=>({}))).detail||'추가 실패');
+      this.textRef.current.value='';
+      await this.handleNewDrugs((await res.json()).drugs);
+    }catch(err){ this.toast('추가 실패: '+err.message); }
+  }
+  toggleMic(){
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if(SR){
+      if(!this.state.recording){
+        const rec=new SR(); rec.lang='ko-KR'; rec.interimResults=true; rec.maxAlternatives=1; rec.continuous=false;
+        this._sr=rec; this._final=''; this.setState({recording:true, voiceHeard:''});
+        rec.onresult=(e)=>{ let interim=''; for(let i=e.resultIndex;i<e.results.length;i++){ const t=e.results[i][0].transcript; if(e.results[i].isFinal) this._final+=t; else interim+=t; } this.setState({voiceHeard:(this._final+interim).trim()}); };
+        rec.onerror=(e)=>{ this.setState({recording:false}); this.toast('음성 인식 실패: '+(e.error==='not-allowed'?'마이크 권한이 필요해요.':e.error)); };
+        rec.onend=()=>{ this.setState({recording:false}); const t=(this._final||this.state.voiceHeard||'').trim(); if(t) this.submitVoiceText(t); else this.toast('들은 내용이 없어요. 다시 시도해 주세요.'); };
+        try{ rec.start(); }catch(err){ this.setState({recording:false}); this.toast('음성 인식을 시작할 수 없어요.'); }
+      }else{
+        this._sr && this._sr.stop(); this.setState({recording:false});
+      }
+      return;
+    }
+    if(!this.state.recording){
+      navigator.mediaDevices.getUserMedia({audio:true}).then(stream=>{
+        this._stream=stream; this._chunks=[]; this._rec=new MediaRecorder(stream);
+        this._rec.ondataavailable=e=>{ if(e.data.size>0) this._chunks.push(e.data); };
+        this._rec.onstop=()=>this.sendVoice();
+        this._rec.start(); this.setState({recording:true});
+      }).catch(()=>this.toast('마이크 권한이 필요해요.'));
+    }else{
+      this._rec.stop(); this._stream.getTracks().forEach(t=>t.stop()); this.setState({recording:false});
+      this.toast('음성을 인식하는 중…');
+    }
+  }
+  async submitVoiceText(text){
+    this.toast('들은 내용: '+text);
+    const p=this.state.patient; if(!p) return;
+    try{
+      const res=await fetch(this.base()+'/api/ocr/text',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({patient_id:p.id,text})});
+      if(!res.ok) throw new Error((await res.json().catch(()=>({}))).detail||'추가 실패');
+      await this.handleNewDrugs((await res.json()).drugs);
+    }catch(err){ this.toast('약 추가 실패: '+err.message); }
+  }
+  async sendVoice(){
+    const p=this.state.patient;
+    const blob=new Blob(this._chunks,{type:'audio/webm'});
+    const form=new FormData(); form.append('patient_id',p.id); form.append('auto_parse','true'); form.append('file',blob,'recording.webm');
+    try{
+      const res=await fetch(this.base()+'/api/speech/transcribe',{method:'POST',body:form});
+      if(!res.ok) throw new Error((await res.json().catch(()=>({}))).detail||'인식 실패');
+      const data=await res.json();
+      if(data.text) this.toast('들은 내용: '+data.text);
+      await this.handleNewDrugs(data.drugs||[]);
+    }catch(err){ this.toast('음성 인식 실패: '+err.message); }
+  }
+  async handleNewDrugs(drugs){
+    const n=(drugs||[]).length;
+    this.toast(n>0?(n+'개 약을 추가했어요.'):'인식된 약이 없어요. 다시 시도해 주세요.');
+    await this.refreshDrugs();
+  }
+  async refreshDrugs(){
+    const p=this.state.patient; if(!p) return;
+    try{
+      const res=await fetch(this.base()+'/api/ocr/'+p.id);
+      if(!res.ok) throw new Error('목록 조회 실패');
+      this.setState({drugs:(await res.json()).drugs||[]});
+    }catch(err){}
+  }
+  async analyze(){
+    const p=this.state.patient; if(!p) return;
+    if(!this.state.drugs.length){ this.toast('먼저 약을 입력해 주세요.'); this.nav('meds'); return; }
+    this.setState({analyzing:true});
+    try{
+      const res=await fetch(this.base()+'/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({patient_id:p.id})});
+      if(!res.ok) throw new Error((await res.json().catch(()=>({}))).detail||'검사 실패');
+      this.setState({analysis:await res.json(), analyzing:false, tab:'result'});
+    }catch(err){ this.setState({analyzing:false}); this.toast('검사 실패: '+err.message); }
+  }
+  speak(text){
+    if(!('speechSynthesis' in window)){ this.toast('이 브라우저는 음성 읽기를 지원하지 않아요.'); return; }
+    const u=new SpeechSynthesisUtterance(String(text)); u.lang='ko-KR'; u.rate=0.92;
+    speechSynthesis.cancel(); speechSynthesis.speak(u);
+  }
+  askChip(q){ this.chatRef.current.value=q; this.sendChat(); }
+  toggleChatMic(){
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if(!SR){ this.toast('이 브라우저는 음성 입력을 지원하지 않아요. (크롬 권장)'); return; }
+    if(this.state.chatRecording){ this._csr && this._csr.stop(); return; }
+    const rec=new SR(); rec.lang='ko-KR'; rec.interimResults=true; rec.maxAlternatives=1; rec.continuous=false;
+    this._csr=rec; this._cfinal='';
+    this.setState({chatRecording:true});
+    rec.onresult=(e)=>{ let interim=''; for(let i=e.resultIndex;i<e.results.length;i++){ const t=e.results[i][0].transcript; if(e.results[i].isFinal) this._cfinal+=t; else interim+=t; } if(this.chatRef.current) this.chatRef.current.value=(this._cfinal+interim).trim(); };
+    rec.onerror=(e)=>{ this.setState({chatRecording:false}); this.toast('음성 인식 실패: '+(e.error==='not-allowed'?'마이크 권한이 필요해요.':e.error)); };
+    rec.onend=()=>{ this.setState({chatRecording:false}); const t=(this._cfinal||'').trim(); if(t && this.chatRef.current){ this.chatRef.current.value=t; this.sendChat(); } };
+    try{ rec.start(); }catch(err){ this.setState({chatRecording:false}); this.toast('음성 인식을 시작할 수 없어요.'); }
+  }
+  async sendChat(){
+    const q=(this.chatRef.current.value||'').trim(); if(!q) return;
+    if(!this.apiKey()){
+      this.toast('챗봇을 쓰려면 내 정보 › 설정에서 API 키를 넣어주세요.');
+      this.setState(s=>({messages:[...s.messages,{role:'bot',text:'챗봇을 사용하려면 하단 [내 정보] › 설정에서 Anthropic API 키를 입력해 주세요. (테스트용, 저장되지 않아요)'}]}));
+      return;
+    }
+    this.chatRef.current.value='';
+    const history=[...this.state.chatHistory,{role:'user',content:q}];
+    this.setState(s=>({messages:[...s.messages,{role:'user',text:q}], chatHistory:history, chatting:true}));
+    const drugNames=this.state.drugs.map(d=>d.product_name||d.ingr_name).filter(Boolean);
+    const a=this.state.analysis;
+    const flags=a?Object.keys(a).filter(k=>k.endsWith('_flag')&&a[k]):[];
+    const context='[사용자가 현재 복용 중인 약]: '+(drugNames.length?drugNames.join(', '):'아직 입력 안 됨')+'\n'+
+      '[방금 검사에서 걸린 항목]: '+(flags.length?flags.join(', '):'아직 검사 안 했거나 특이사항 없음');
+    const systemPrompt="너는 '약속'이라는 복약 안전 상담 도우미야. 고령 사용자가 많으니 쉽고 따뜻하게, 짧게 답해.\n- 약 병용금기/중복, 약-음식 상호작용, 복약 방법, 기본 건강 상담에 답한다.\n- 약물 안전의 '확정 판정'은 이 앱의 분석 기능이 공식 데이터로 이미 수행한다. 너는 그 결과를 쉽게 설명하고 일반 정보를 제공하되, 위험을 단정하지 말 것.\n- 확실하지 않으면 추측하지 말고 약사·의사 상담을 권한다.\n- 진단·처방은 하지 않는다(의료행위 아님).\n\n"+context;
+    try{
+      const res=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',
+        headers:{'Content-Type':'application/json','x-api-key':this.apiKey(),'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+        body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:600,system:systemPrompt,messages:history})});
+      if(!res.ok){ const e=await res.json().catch(()=>({})); throw new Error((e.error&&e.error.message)||('HTTP '+res.status)); }
+      const data=await res.json();
+      const answer=(data.content||[]).map(c=>c.text||'').join('').trim()||'죄송해요, 답변을 만들지 못했어요.';
+      this.setState(s=>({messages:[...s.messages,{role:'bot',text:answer}], chatHistory:[...s.chatHistory,{role:'assistant',content:answer}], chatting:false}));
+    }catch(err){
+      this.setState(s=>({messages:[...s.messages,{role:'bot',text:'답변 중 문제가 생겼어요: '+err.message+'\n(내 정보 › 설정의 API 키를 확인해 주세요.)'}], chatting:false}));
+    }
+  }
+
+  buildCards(r){
+    const cards=[]; const push=(kind,icon,title,body)=>cards.push({kind,icon,title,body});
+    const J=a=>(a||[]).join(', ');
+    if(r['병용금기_flag'])(r['병용금기']||[]).forEach(x=>{const pair=(x['해당약물']||[]).join(' + ');push('danger','⚠️','함께 드시면 위험해요',pair+'는 함께 복용하면 안 되는 조합입니다. '+(x['상세정보']?x['상세정보']+' ':'')+'둘 중 하나만 복용하도록 약사·의사와 상담하세요.');});
+    if(r['동일성분중복_flag'])(r['동일성분중복']||[]).forEach(x=>push('danger','⚠️','같은 성분을 중복 복용 중이에요',J(x['해당약물'])+' — 성분 '+(x['성분명']||'')+'이(가) 겹칩니다. 과다 복용 위험이 있어요.'));
+    if(r['중복처방_교차처방과_flag'])(r['중복처방_교차처방과']||[]).forEach(x=>push('warn','🔁','여러 과에서 같은 약이 처방됐어요',J(x['처방과'])+'에서 '+(x['성분명']||'')+' 성분이 각각 처방됐습니다. 진료 시 알려주세요.'));
+    if(r['노인주의약물_flag'])(r['노인주의']||[]).forEach(x=>push('warn','👵','어르신 주의가 필요한 약이에요',J(x['해당약물'])+(x['약품상세정보']?' — '+x['약품상세정보']:'')));
+    if(r['주의해열진통제_flag'])(r['노인주의_해열진통제']||[]).forEach(x=>push('warn','👵','어르신 주의 해열·진통제예요',J(x['해당약물'])+(x['약품상세정보']?' — '+x['약품상세정보']:'')));
+    if(r['연령금기_flag'])(r['연령금기']||[]).forEach(x=>push('warn','🚫','나이에 주의가 필요한 약이에요',J(x['해당약물'])+' — 조건: '+(x['조건']||'')+(x['상세정보']?'. '+x['상세정보']:'')));
+    if(r['효능군중복_flag'])(r['효능군중복']||[]).forEach(x=>{const names=(x['약물']||[]).map(a=>(a['해당약물']||[]).join(', ')).filter(Boolean).join(', ');push('warn','🔷','비슷한 계열의 약이 겹쳐요',(x['계열명']||'')+' 계열: '+names+'. 효과가 중복될 수 있어요.');});
+    if(!cards.length)push('safe','✅','함께 드셔도 괜찮아요','입력하신 약들에서 병용금기·중복·주의 항목이 발견되지 않았어요. 그래도 새 약을 드실 땐 약사와 상담하세요.');
+    return cards;
+  }
+
+  renderVals(){
+    const S=this.state;
+    const accent=this.props.accentColor||'#0052FF';
+    const soft=accent+'14', soft2=accent+'22';
+    const btnPrimaryStyle=`border:none;background:${accent};color:#fff;font-family:inherit;font-weight:700;cursor:pointer;box-shadow:0 6px 16px ${accent}3d`;
+    const btnSoftStyle=`border:none;background:${soft2};color:${accent};font-family:inherit;font-weight:700;cursor:pointer`;
+    const linkStyle=`color:${accent}`;
+
+    const p=S.patient||{};
+    const nm=p.last_name||'';
+    const patientLine = nm ? (nm+'님 · '+(p.age||'')+'세'+((p.underlying_conditions&&p.underlying_conditions.length)?' · '+p.underlying_conditions.join(', '):'')) : '';
+
+    const mapDrug=d=>{
+      const matched=d.match_status==='matched';
+      const name=d.product_name||d.ingr_name||d.source_text||'(이름 미상)';
+      const meta=[d.ingr_name,d.efficacy_group,d.prescribing_dept].filter(Boolean).join(' · ') || (matched?'':'확인이 필요해요');
+      const c=matched?accent:'#9A5A00', bg=matched?'#EAF0FF':'#FBF0DD';
+      return {name, meta, statusLabel:matched?'확인됨':'확인 필요',
+        badgeStyle:`font-size:11.5px;font-weight:700;color:${c};background:${bg};padding:4px 10px;border-radius:20px;white-space:nowrap`,
+        iconStyle:`width:40px;height:40px;border-radius:12px;background:${matched?'#EAF0FF':'#FBF0DD'};display:flex;align-items:center;justify-content:center;font-size:19px;flex-shrink:0`};
+    };
+    const drugsView=(S.drugs||[]).map(mapDrug);
+    const homeDrugs=drugsView.slice(0,3);
+    const hasDrugs=drugsView.length>0;
+
+    const hasAnalysis=!!S.analysis;
+    const cards=hasAnalysis?this.buildCards(S.analysis):[];
+    const kindStyle={
+      danger:{card:'background:#FDECEC;border:1px solid #F0A9A9', head:'#C0392B', body:'#7A2321'},
+      warn:{card:'background:#FBF0DD;border:1px solid #E6C079', head:'#9A5A00', body:'#6B4406'},
+      safe:{card:'background:#EAF3EC;border:1px solid #A9D3BA', head:'#1F6B44', body:'#265039'}
+    };
+    const cardsView=cards.map(c=>{const k=kindStyle[c.kind];return {icon:c.icon,title:c.title,body:c.body,
+      cardStyle:`${k.card};border-radius:16px;padding:16px`,
+      headStyle:`display:flex;align-items:center;gap:8px;font-size:16px;font-weight:800;color:${k.head}`,
+      bodyStyle:`font-size:14px;line-height:1.65;margin-top:8px;color:${k.body}`};});
+    const dangerCount=cards.filter(c=>c.kind==='danger').length;
+    const warnCount=cards.filter(c=>c.kind==='warn').length;
+    const summary={drugCount:drugsView.length, warnCount:hasAnalysis?warnCount:0, dangerCount:hasAnalysis?dangerCount:0};
+
+    let heroTitle, heroSub;
+    if(!hasAnalysis){ heroTitle='약을 검사해\n볼까요?'; heroSub=hasDrugs?('입력하신 '+drugsView.length+'가지 약이 서로 부딪히지 않는지 확인해 드려요.'):'먼저 드시는 약을 입력해 주세요.'; }
+    else if(dangerCount>0){ heroTitle='함께 드시면\n위험할 수 있어요'; heroSub='위험 '+dangerCount+'건이 발견됐어요. 아래에서 확인하세요.'; }
+    else if(warnCount>0){ heroTitle='확인이 필요한\n약이 있어요'; heroSub='주의 '+warnCount+'건을 확인해 주세요.'; }
+    else { heroTitle='함께 드셔도\n괜찮아요'; heroSub='입력하신 약에서 부딪히는 항목이 없었어요.'; }
+    let heroBg;
+    if(dangerCount>0 && hasAnalysis) heroBg='linear-gradient(135deg,#B93A2E,#D2543F)';
+    else if(warnCount>0 && hasAnalysis) heroBg='linear-gradient(135deg,#B4690E,#D08A1E)';
+    else heroBg=`linear-gradient(135deg,${accent},${accent}d9)`;
+    const heroStyle=`background:${heroBg};border-radius:24px;padding:22px;color:#fff;box-shadow:0 12px 30px rgba(0,0,0,.16)`;
+
+    const tabs=[['home','🏠','홈'],['meds','💊','약'],['result','🔎','검사'],['chat','💬','상담'],['profile','👤','내 정보']];
+    const navItems=tabs.map(([key,icon,label])=>{
+      const active=S.tab===key;
+      return {key,icon,label,onClick:()=>this.nav(key),
+        style:`flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;color:${active?accent:'#A39A8C'};font-weight:${active?700:500}`};
+    });
+
+    const subs=[['photo','사진'],['text','직접 입력'],['voice','음성']];
+    const inputTabs=subs.map(([key,label])=>{
+      const active=S.inputTab===key;
+      return {key,label,onClick:()=>this.setState({inputTab:key}),
+        style:active?`flex:1;background:${accent};color:#fff;border:none;font-family:inherit;font-weight:700;font-size:14px;padding:11px;border-radius:11px;cursor:pointer`
+                    :`flex:1;background:#fff;color:#8A8175;border:1px solid #EFEDE6;font-family:inherit;font-weight:600;font-size:14px;padding:11px;border-radius:11px;cursor:pointer`};
+    });
+
+    const messagesView=S.messages.map((m,idx)=>{
+      const isBot=m.role==='bot';
+      return {key:idx, text:m.text, isBot, onSpeak:()=>this.speak(m.text),
+        wrapStyle:`display:flex;flex-direction:column;max-width:84%;align-self:${isBot?'flex-start':'flex-end'}`,
+        bubbleStyle:isBot?'background:#F1EFE8;color:#1A1712;padding:12px 14px;border-radius:16px;border-bottom-left-radius:5px;font-size:15px;line-height:1.55;white-space:pre-wrap;word-break:break-word'
+                          :`background:${accent};color:#fff;padding:12px 14px;border-radius:16px;border-bottom-right-radius:5px;font-size:15px;line-height:1.55;white-space:pre-wrap;word-break:break-word`};
+    });
+    const chips=[['지금 먹는 약 같이 먹어도 되나요?','같이 먹어도 되나요?'],['이 약들이랑 같이 먹으면 안 좋은 음식이 있나요?','피해야 할 음식은?'],['약을 깜빡하고 안 먹었을 땐 어떻게 하나요?','약을 깜빡했어요']]
+      .map(([q,label],idx)=>({key:idx,label,onClick:()=>this.askChip(q)}));
+
+    const headerTitles={home:'약속',meds:'약 입력',result:'검사 결과',chat:'약 궁금증 상담',profile:'내 정보'};
+
+    return {
+      isStart:S.screen==='start', isApp:S.screen==='app',
+      isHome:S.tab==='home', isMeds:S.tab==='meds', isResult:S.tab==='result', isChat:S.tab==='chat', isProfile:S.tab==='profile',
+      isPhotoTab:S.inputTab==='photo', isTextTab:S.inputTab==='text', isVoiceTab:S.inputTab==='voice',
+      btnPrimaryStyle, btnSoftStyle, linkStyle, heroStyle, heroTitle, heroSub,
+      patientLine, headerTitle:headerTitles[S.tab]||'약속',
+      startHeadline:'안녕하세요,\n약속이에요.',
+      startLabel: S.registering ? React.createElement('span',null,React.createElement('span',{className:'yk-spin'}),'등록 중…') : '시작하기',
+      analyzeLabel: S.analyzing ? React.createElement('span',null,React.createElement('span',{className:'yk-spin'}),'검사 중…') : '함께 먹어도 되는지 검사하기',
+      micLabel: S.recording ? '⏹ 다 말했어요 (완료)' : '🎙 말하기 시작',
+      micBtnStyle: S.recording ? 'border:none;background:#FDECEC;color:#C0392B;font-family:inherit;font-weight:700;cursor:pointer' : btnSoftStyle,
+      voiceHeard: S.voiceHeard||'', hasVoiceHeard: !!(S.voiceHeard&&S.voiceHeard.trim()),
+      drugsView, homeDrugs, hasDrugs, noDrugs:!hasDrugs,
+      drugCountLabel: drugsView.length?('('+drugsView.length+')'):'',
+      hasAnalysis, noAnalysis:!hasAnalysis, cardsView, summary,
+      messagesView, chips, chatting:S.chatting,
+      chatRecording:S.chatRecording, chatMicLabel:S.chatRecording?'⏹':'🎙',
+      navItems, inputTabs,
+      profileName: nm?(nm+'님'):'사용자', profileMeta: patientLine,
+      hasToast:!!S.toast, toast:S.toast,
+    };
+  }
+
+  render(){
+    const v=this.renderVals();
+    return (
+      <div style={sx("min-height:100vh;display:flex;justify-content:center;align-items:flex-start;background:#ECEAE4")}>
+      <div style={sx("width:min(430px,100%);height:100vh;max-height:940px;background:#F5F4F0;position:relative;display:flex;flex-direction:column;box-shadow:0 0 50px rgba(0,0,0,.10);overflow:hidden")}>
+
+      {/* START */}
+      {v.isStart && (
+      <div className="yk-scroll" style={sx("flex:1;overflow-y:auto;display:flex;flex-direction:column")}>
+        <div style={sx("padding:56px 26px 20px")}>
+          <div style={sx("display:flex;align-items:center;gap:13px")}>
+            <div style={sx("width:52px;height:52px;border-radius:16px;background:#0052FF;display:flex;align-items:center;justify-content:center;color:#fff;font-size:25px;font-weight:800")}>약</div>
+            <div><div style={sx("font-size:27px;font-weight:800;color:#1A1712;letter-spacing:-.02em")}>약속</div><div style={sx("font-size:14px;color:#8A8175")}>복약 안전 지킴이</div></div>
+          </div>
+          <div style={sx("font-size:23px;font-weight:700;color:#2E2A24;margin-top:32px;line-height:1.4;letter-spacing:-.01em;white-space:pre-line")}>{v.startHeadline}</div>
+          <div style={sx("font-size:15px;color:#8A8175;margin-top:10px;line-height:1.6")}>간단히 알려주시면 드시는 약이 서로 부딪히지 않는지 확인해 드릴게요.</div>
+        </div>
+        <div style={sx("flex:1;background:#fff;border-radius:28px 28px 0 0;margin-top:14px;padding:28px 26px 30px;box-shadow:0 -4px 24px rgba(0,0,0,.04)")}>
+          <label style={sx("display:block;font-size:15px;font-weight:700;color:#3A342C;margin-bottom:8px")}>이름</label>
+          <input ref={this.nameRef} type="text" placeholder="예: 홍길동" style={sx("width:100%;padding:16px 16px;border:1.5px solid #E6E2D8;border-radius:14px;font-size:18px;font-family:inherit;background:#FBFAF7;color:#1A1712")} />
+          <label style={sx("display:block;font-size:15px;font-weight:700;color:#3A342C;margin:18px 0 8px")}>나이</label>
+          <input ref={this.ageRef} type="number" placeholder="72" min="0" max="149" style={sx("width:100%;padding:16px 16px;border:1.5px solid #E6E2D8;border-radius:14px;font-size:18px;font-family:inherit;background:#FBFAF7;color:#1A1712")} />
+          <label style={sx("display:block;font-size:15px;font-weight:700;color:#3A342C;margin:18px 0 8px")}>기저질환 <span style={sx("color:#A39A8C;font-weight:500")}>(선택)</span></label>
+          <input ref={this.condRef} type="text" placeholder="예: 고혈압, 당뇨" style={sx("width:100%;padding:16px 16px;border:1.5px solid #E6E2D8;border-radius:14px;font-size:18px;font-family:inherit;background:#FBFAF7;color:#1A1712")} />
+          <button onClick={()=>this.registerPatient()} style={sx(v.btnPrimaryStyle+";width:100%;font-size:18px;padding:18px;border-radius:16px;margin-top:26px")}>{v.startLabel}</button>
+          <div style={sx("font-size:12.5px;color:#A39A8C;text-align:center;margin-top:16px;line-height:1.6")}>이 결과는 참고용 정보이며 의료 행위가 아니에요.<br/>정확한 판단은 약사·의사와 상담하세요.</div>
+        </div>
+      </div>
+      )}
+
+      {/* APP */}
+      {v.isApp && (
+      <div style={sx("flex:1;display:flex;flex-direction:column;min-height:0")}>
+
+        <div style={sx("flex:none;background:#fff;padding:16px 22px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #EFEDE6")}>
+          <div style={sx("display:flex;align-items:center;gap:11px")}>
+            <div style={sx("width:40px;height:40px;border-radius:12px;background:#0052FF;display:flex;align-items:center;justify-content:center;color:#fff;font-size:19px;font-weight:800")}>약</div>
+            <div><div style={sx("font-size:18px;font-weight:800;color:#1A1712;letter-spacing:-.02em")}>{v.headerTitle}</div><div style={sx("font-size:12.5px;color:#8A8175")}>{v.patientLine}</div></div>
+          </div>
+          <div onClick={()=>this.nav('profile')} style={sx("width:40px;height:40px;border-radius:50%;background:#F0EEE7;display:flex;align-items:center;justify-content:center;font-size:18px;cursor:pointer")}>👤</div>
+        </div>
+
+        <div className="yk-scroll" style={sx("flex:1;overflow-y:auto;min-height:0")}>
+
+          {/* HOME */}
+          {v.isHome && (
+          <div style={sx("padding:20px 22px 26px;display:flex;flex-direction:column;gap:16px;animation:ykfade .25s ease")}>
+            <div style={sx(v.heroStyle)}>
+              <div style={sx("font-size:13px;opacity:.9;font-weight:500")}>{v.patientLine}</div>
+              <div style={sx("font-size:26px;font-weight:800;margin-top:8px;line-height:1.25;letter-spacing:-.02em;white-space:pre-line")}>{v.heroTitle}</div>
+              <div style={sx("font-size:13.5px;opacity:.92;margin-top:9px;line-height:1.55")}>{v.heroSub}</div>
+              <div style={sx("display:flex;gap:8px;margin-top:18px")}>
+                <div style={sx("flex:1;background:rgba(255,255,255,.18);border-radius:13px;padding:11px 12px")}><div style={sx("font-size:22px;font-weight:800")}>{v.summary.drugCount}</div><div style={sx("font-size:11.5px;opacity:.9")}>복용 약</div></div>
+                <div style={sx("flex:1;background:rgba(255,255,255,.18);border-radius:13px;padding:11px 12px")}><div style={sx("font-size:22px;font-weight:800")}>{v.summary.warnCount}</div><div style={sx("font-size:11.5px;opacity:.9")}>주의</div></div>
+                <div style={sx("flex:1;background:rgba(255,255,255,.18);border-radius:13px;padding:11px 12px")}><div style={sx("font-size:22px;font-weight:800")}>{v.summary.dangerCount}</div><div style={sx("font-size:11.5px;opacity:.9")}>위험</div></div>
+              </div>
+            </div>
+
+            <button onClick={()=>this.analyze()} style={sx(v.btnPrimaryStyle+";width:100%;font-size:17px;padding:17px;border-radius:16px")}>{v.analyzeLabel}</button>
+
+            <div>
+              <div style={sx("display:flex;align-items:center;justify-content:space-between;margin-bottom:11px")}>
+                <span style={sx("font-size:16px;font-weight:800;color:#1A1712")}>복용 중인 약</span>
+                <span onClick={()=>this.nav('meds')} style={sx(v.linkStyle+";font-size:14px;font-weight:700;cursor:pointer")}>전체 보기 ›</span>
+              </div>
+              {v.hasDrugs && (
+              <div style={sx("display:flex;flex-direction:column;gap:9px")}>
+                {v.homeDrugs.map((drug,i)=>(
+                  <div key={i} style={sx("display:flex;align-items:center;justify-content:space-between;gap:10px;background:#fff;border:1px solid #EFEDE6;border-radius:16px;padding:13px 15px")}>
+                    <div style={sx("display:flex;align-items:center;gap:12px")}>
+                      <div style={sx(drug.iconStyle)}>💊</div>
+                      <div><div style={sx("font-size:15.5px;font-weight:600;color:#1A1712")}>{drug.name}</div><div style={sx("font-size:12.5px;color:#9A968C;margin-top:1px")}>{drug.meta}</div></div>
+                    </div>
+                    <span style={sx(drug.badgeStyle)}>{drug.statusLabel}</span>
+                  </div>
+                ))}
+              </div>
+              )}
+              {v.noDrugs && (
+              <div onClick={()=>this.nav('meds')} style={sx("background:#fff;border:1.5px dashed #DCD8CD;border-radius:16px;padding:22px;text-align:center;cursor:pointer")}>
+                <div style={sx("font-size:30px")}>💊</div>
+                <div style={sx("font-size:15px;font-weight:600;color:#6B6459;margin-top:6px")}>아직 입력된 약이 없어요</div>
+                <div style={sx("font-size:13px;color:#A39A8C;margin-top:2px")}>눌러서 약을 추가해 보세요</div>
+              </div>
+              )}
+            </div>
+
+            <div onClick={()=>this.nav('chat')} style={sx("background:#EAF0FF;border-radius:18px;padding:16px 18px;display:flex;align-items:center;gap:13px;cursor:pointer")}>
+              <div style={sx("font-size:25px")}>💬</div>
+              <div style={sx("flex:1")}><div style={sx("font-size:14.5px;font-weight:700;color:#0A3A99")}>약, 궁금한 게 있으세요?</div><div style={sx("font-size:12.5px;color:#5A79C0;margin-top:1px")}>약속이가 쉽게 알려드려요</div></div>
+              <span style={sx("color:#8AA6E0;font-size:20px")}>›</span>
+            </div>
+          </div>
+          )}
+
+          {/* MEDS */}
+          {v.isMeds && (
+          <div style={sx("padding:20px 22px 26px;display:flex;flex-direction:column;gap:16px;animation:ykfade .25s ease")}>
+            <div>
+              <div style={sx("font-size:16px;font-weight:800;color:#1A1712;margin-bottom:11px")}>약 정보 입력</div>
+              <div style={sx("display:flex;gap:7px;margin-bottom:14px")}>
+                {v.inputTabs.map(it=>(<button key={it.key} onClick={it.onClick} style={sx(it.style)}>{it.label}</button>))}
+              </div>
+              {v.isPhotoTab && (
+              <div>
+                <div onClick={()=>this.onPickFile()} style={sx("border:2px dashed #0052FF;border-radius:18px;padding:30px 18px;text-align:center;background:#EAF0FF;cursor:pointer")}>
+                  <div style={sx("font-size:36px")}>📷</div>
+                  <div style={sx("font-size:17px;font-weight:700;color:#0A3A99;margin-top:8px")}>약봉투 사진 올리기</div>
+                  <div style={sx("font-size:13px;color:#5A79C0;margin-top:3px")}>사진을 찍으면 약을 자동으로 읽어요</div>
+                </div>
+                <input ref={this.fileRef} type="file" accept="image/*" capture="environment" style={sx("display:none")} onChange={(e)=>this.uploadImage(e)} />
+              </div>
+              )}
+              {v.isTextTab && (
+              <div style={sx("background:#fff;border:1px solid #EFEDE6;border-radius:16px;padding:16px")}>
+                <label style={sx("display:block;font-size:14px;font-weight:700;color:#3A342C;margin-bottom:8px")}>드시는 약을 적어주세요</label>
+                <textarea ref={this.textRef} rows="2" placeholder="예: 타이레놀정 500mg 하루 3번" style={sx("width:100%;padding:14px;border:1.5px solid #E6E2D8;border-radius:12px;font-size:16px;font-family:inherit;background:#FBFAF7;color:#1A1712;resize:none")}></textarea>
+                <button onClick={()=>this.submitText()} style={sx(v.btnSoftStyle+";width:100%;font-size:16px;padding:14px;border-radius:12px;margin-top:11px")}>약 추가하기</button>
+              </div>
+              )}
+              {v.isVoiceTab && (
+              <div style={sx("background:#fff;border:1px solid #EFEDE6;border-radius:16px;padding:20px;text-align:center")}>
+                <button onClick={()=>this.toggleMic()} style={sx(v.micBtnStyle+";width:100%;font-size:17px;padding:16px;border-radius:14px")}>{v.micLabel}</button>
+                <div style={sx("font-size:13px;color:#9A968C;margin-top:11px;line-height:1.5")}>버튼을 누르고 드시는 약을 또박또박 말씀해 주세요.<br/>예: "타이레놀정 오백 하루 세 번"</div>
+                {v.hasVoiceHeard && (<div style={sx("margin-top:12px;background:#EAF0FF;border-radius:12px;padding:12px 14px;text-align:left;font-size:14px;color:#0A3A99;line-height:1.5")}>🗣 들은 내용: {v.voiceHeard}</div>)}
+              </div>
+              )}
+            </div>
+
+            <div>
+              <div style={sx("font-size:16px;font-weight:800;color:#1A1712;margin-bottom:11px")}>복용 중인 약 <span style={sx(v.linkStyle)}>{v.drugCountLabel}</span></div>
+              {v.hasDrugs && (
+              <div style={sx("display:flex;flex-direction:column;gap:9px")}>
+                {v.drugsView.map((drug,i)=>(
+                  <div key={i} style={sx("display:flex;align-items:center;justify-content:space-between;gap:10px;background:#fff;border:1px solid #EFEDE6;border-radius:16px;padding:13px 15px")}>
+                    <div style={sx("display:flex;align-items:center;gap:12px")}>
+                      <div style={sx(drug.iconStyle)}>💊</div>
+                      <div><div style={sx("font-size:15.5px;font-weight:600;color:#1A1712")}>{drug.name}</div><div style={sx("font-size:12.5px;color:#9A968C;margin-top:1px")}>{drug.meta}</div></div>
+                    </div>
+                    <span style={sx(drug.badgeStyle)}>{drug.statusLabel}</span>
+                  </div>
+                ))}
+              </div>
+              )}
+              {v.noDrugs && (<div style={sx("background:#fff;border:1.5px dashed #DCD8CD;border-radius:16px;padding:22px;text-align:center;color:#9A968C;font-size:14px;line-height:1.6")}>아직 입력된 약이 없어요.<br/>위에서 사진·직접입력·음성으로 추가하세요.</div>)}
+            </div>
+
+            <button onClick={()=>this.analyze()} style={sx(v.btnPrimaryStyle+";width:100%;font-size:17px;padding:17px;border-radius:16px")}>{v.analyzeLabel}</button>
+          </div>
+          )}
+
+          {/* RESULT */}
+          {v.isResult && (
+          <div style={sx("padding:20px 22px 26px;display:flex;flex-direction:column;gap:14px;animation:ykfade .25s ease")}>
+            {v.hasAnalysis && (
+            <div style={sx("display:flex;flex-direction:column;gap:14px")}>
+              <div style={sx("font-size:16px;font-weight:800;color:#1A1712")}>검사 결과</div>
+              {v.cardsView.map((card,i)=>(
+                <div key={i} style={sx(card.cardStyle)}>
+                  <div style={sx(card.headStyle)}><span style={sx("font-size:19px")}>{card.icon}</span><span>{card.title}</span></div>
+                  <div style={sx(card.bodyStyle)}>{card.body}</div>
+                </div>
+              ))}
+              <div style={sx("background:#fff;border:1px solid #EFEDE6;border-radius:14px;padding:14px 16px;font-size:12.5px;color:#9A968C;line-height:1.6")}>ℹ️ 이 결과는 참고용 정보이며 의료 행위가 아닙니다. 정확한 판단과 복약 조정은 반드시 약사·의사와 상담하세요.</div>
+            </div>
+            )}
+            {v.noAnalysis && (
+            <div style={sx("background:#fff;border:1.5px dashed #DCD8CD;border-radius:18px;padding:40px 24px;text-align:center;margin-top:20px")}>
+              <div style={sx("font-size:40px")}>🔎</div>
+              <div style={sx("font-size:17px;font-weight:700;color:#3A342C;margin-top:10px")}>아직 검사하지 않았어요</div>
+              <div style={sx("font-size:14px;color:#9A968C;margin-top:5px;line-height:1.6")}>약을 입력한 뒤 검사하면<br/>함께 드셔도 되는지 알려드려요.</div>
+              <button onClick={()=>this.analyze()} style={sx(v.btnPrimaryStyle+";font-size:16px;padding:15px 26px;border-radius:14px;margin-top:20px")}>지금 검사하기</button>
+            </div>
+            )}
+          </div>
+          )}
+
+          {/* CHAT */}
+          {v.isChat && (
+          <div style={sx("display:flex;flex-direction:column;height:100%;animation:ykfade .25s ease")}>
+            <div ref={this.chatLogRef} className="yk-scroll" style={sx("flex:1;overflow-y:auto;padding:18px 18px 6px;display:flex;flex-direction:column;gap:11px;min-height:0")}>
+              {v.messagesView.map(msg=>(
+                <div key={msg.key} style={sx(msg.wrapStyle)}>
+                  <div style={sx(msg.bubbleStyle)}>{msg.text}</div>
+                  {msg.isBot && (<span onClick={msg.onSpeak} style={sx(v.linkStyle+";font-size:12.5px;font-weight:600;margin-top:5px;cursor:pointer;display:inline-block")}>🔊 들어보기</span>)}
+                </div>
+              ))}
+              {v.chatting && (<div style={sx("align-self:flex-start;color:#9A968C;font-size:14px;padding:4px 6px")}>약속이가 답변 중…</div>)}
+            </div>
+            <div style={sx("flex:none;display:flex;gap:7px;flex-wrap:wrap;padding:8px 16px 4px")}>
+              {v.chips.map(chip=>(<button key={chip.key} onClick={chip.onClick} style={sx("background:#EAF0FF;color:#0A3A99;border:none;font-family:inherit;font-size:12.5px;font-weight:600;padding:8px 13px;border-radius:18px;cursor:pointer")}>{chip.label}</button>))}
+            </div>
+            <div style={sx("flex:none;display:flex;gap:8px;padding:12px 16px 16px;border-top:1px solid #EFEDE6;background:#fff")}>
+              <button onClick={()=>this.toggleChatMic()} title="음성으로 질문" style={sx((v.chatRecording?"background:#FDECEC;color:#C0392B;":"background:#EAF0FF;color:#0A3A99;")+"border:none;font-size:19px;padding:0 14px;border-radius:14px;cursor:pointer;flex-shrink:0")}>{v.chatMicLabel}</button>
+              <input ref={this.chatRef} type="text" placeholder={v.chatRecording?"듣고 있어요… 말씀하세요":"궁금한 걸 입력하세요"} onKeyDown={(e)=>{ if(e.key==='Enter') this.sendChat(); }} style={sx("flex:1;padding:14px 15px;border:1.5px solid #E6E2D8;border-radius:14px;font-size:16px;font-family:inherit;background:#FBFAF7;color:#1A1712")} />
+              <button onClick={()=>this.sendChat()} style={sx(v.btnPrimaryStyle+";font-size:16px;padding:0 20px;border-radius:14px;flex-shrink:0")}>전송</button>
+            </div>
+          </div>
+          )}
+
+          {/* PROFILE */}
+          {v.isProfile && (
+          <div style={sx("padding:20px 22px 26px;display:flex;flex-direction:column;gap:16px;animation:ykfade .25s ease")}>
+            <div style={sx("background:#fff;border:1px solid #EFEDE6;border-radius:18px;padding:20px;display:flex;align-items:center;gap:15px")}>
+              <div style={sx("width:56px;height:56px;border-radius:18px;background:#EAF0FF;display:flex;align-items:center;justify-content:center;font-size:26px")}>👤</div>
+              <div><div style={sx("font-size:19px;font-weight:800;color:#1A1712")}>{v.profileName}</div><div style={sx("font-size:13.5px;color:#8A8175;margin-top:2px")}>{v.profileMeta}</div></div>
+            </div>
+            <div style={sx("background:#fff;border:1px solid #EFEDE6;border-radius:18px;padding:18px")}>
+              <div style={sx("font-size:14px;font-weight:800;color:#3A342C;margin-bottom:12px")}>서버·챗봇 설정 <span style={sx("color:#A39A8C;font-weight:500")}>(개발용)</span></div>
+              <label style={sx("display:block;font-size:13px;font-weight:700;color:#6B6459;margin-bottom:6px")}>분석 서버 주소</label>
+              <input ref={this.baseRef} type="text" defaultValue="https://web-production-bf56f.up.railway.app" style={sx("width:100%;padding:12px 13px;border:1.5px solid #E6E2D8;border-radius:11px;font-size:14px;font-family:inherit;background:#FBFAF7;color:#1A1712")} />
+              <label style={sx("display:block;font-size:13px;font-weight:700;color:#6B6459;margin:14px 0 6px")}>챗봇 Anthropic API 키</label>
+              <input ref={this.keyRef} type="password" placeholder="sk-ant-... (테스트 시에만, 저장 안 됨)" style={sx("width:100%;padding:12px 13px;border:1.5px solid #E6E2D8;border-radius:11px;font-size:14px;font-family:inherit;background:#FBFAF7;color:#1A1712")} />
+              <div style={sx("font-size:12px;color:#A39A8C;margin-top:10px;line-height:1.6")}>이 키는 브라우저 메모리에만 잠깐 쓰이고 새로고침하면 사라져요. 파일·서버에 저장되지 않습니다.</div>
+            </div>
+            <div style={sx("font-size:12.5px;color:#A39A8C;text-align:center;line-height:1.6;padding:0 10px")}>약속은 참고용 복약 안전 정보를 제공하며 의료 행위가 아닙니다.<br/>정확한 판단은 약사·의사와 상담하세요.</div>
+          </div>
+          )}
+
+        </div>
+
+        {/* bottom nav */}
+        <div style={sx("flex:none;background:#fff;border-top:1px solid #EFEDE6;display:flex;align-items:stretch;padding:8px 6px 12px")}>
+          {v.navItems.map(item=>(
+            <div key={item.key} onClick={item.onClick} style={sx(item.style)}>
+              <span style={sx("font-size:21px")}>{item.icon}</span>
+              <span style={sx("font-size:11.5px")}>{item.label}</span>
+            </div>
+          ))}
+        </div>
+
+      </div>
+      )}
+
+      {/* toast */}
+      {v.hasToast && (<div style={sx("position:absolute;bottom:88px;left:50%;transform:translateX(-50%);background:#1A1712;color:#fff;padding:12px 20px;border-radius:24px;font-size:14px;max-width:88%;text-align:center;z-index:50;box-shadow:0 6px 20px rgba(0,0,0,.25);animation:ykfade .25s ease")}>{v.toast}</div>)}
+
+      </div>
+      </div>
+    );
+  }
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App accentColor="#0052FF" />);
+</script>
+</body>
+</html>
